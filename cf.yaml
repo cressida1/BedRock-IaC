@@ -1,0 +1,127 @@
+Based on the architecture diagram and the provided specifications, here's the Terraform code to create the infrastructure:
+
+```hcl
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 4.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = "us-west-2"  # Change this to your preferred region
+}
+
+resource "aws_sqs_queue" "migration_queue" {
+  name = "migration-queue"
+  fifo_queue = false
+}
+
+resource "aws_lambda_function" "migration_processor" {
+  filename      = "lambda_function.zip"  # Ensure this file exists
+  function_name = "migration-processor"
+  role          = aws_iam_role.lambda_role.arn
+  handler       = "lambda_function.handler"
+  runtime       = "python3.12"
+  timeout       = 900
+  memory_size   = 512
+
+  environment {
+    variables = {
+      SQS_QUEUE_URL = aws_sqs_queue.migration_queue.url
+      DYNAMODB_TABLE = aws_dynamodb_table.migration_table.name
+    }
+  }
+}
+
+resource "aws_dynamodb_table" "migration_table" {
+  name           = "Migration"
+  billing_mode   = "PROVISIONED"
+  read_capacity  = 10
+  write_capacity = 30
+  hash_key       = "MigrationId"
+  range_key      = "Entity"
+
+  attribute {
+    name = "MigrationId"
+    type = "S"
+  }
+
+  attribute {
+    name = "Entity"
+    type = "S"
+  }
+}
+
+resource "aws_iam_role" "lambda_role" {
+  name = "migration_lambda_role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_policy" {
+  policy_arn = aws_iam_policy.lambda_policy.arn
+  role       = aws_iam_role.lambda_role.name
+}
+
+resource "aws_iam_policy" "lambda_policy" {
+  name        = "migration_lambda_policy"
+  path        = "/"
+  description = "IAM policy for migration Lambda function"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "dynamodb:PutItem"
+        ]
+        Resource = [
+          aws_sqs_queue.migration_queue.arn,
+          aws_dynamodb_table.migration_table.arn
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:*:*:*"
+      }
+    ]
+  })
+}
+
+resource "aws_lambda_event_source_mapping" "sqs_trigger" {
+  event_source_arn = aws_sqs_queue.migration_queue.arn
+  function_name    = aws_lambda_function.migration_processor.arn
+}
+```
+
+This Terraform code creates the following resources:
+
+1. An SQS queue
+2. A Lambda function with the specified runtime, timeout, and memory
+3. A DynamoDB table with the specified attributes and capacity
+4. IAM roles and policies for the Lambda function
+5. An event source mapping to trigger the Lambda function from the SQS queue
+
+Make sure to replace "lambda_function.zip" with the actual ZIP file containing your Lambda function code. Also, adjust the region in the AWS provider block if needed.
