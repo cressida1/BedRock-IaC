@@ -1,20 +1,19 @@
-Here's the Terraform code to create the infrastructure as described:
+Here's the Terraform code to create the infrastructure based on the architecture diagram and requirements you've provided:
 
 ```hcl
 provider "aws" {
-  region = "us-east-1"
+  region = "us-west-2"  # Change this to your desired region
 }
 
 resource "aws_sqs_queue" "migration_queue" {
   name = "migration-queue"
-  visibility_timeout_seconds = 900  # 15 minutes to match Lambda timeout
 }
 
-resource "aws_lambda_function" "migration_processor" {
-  filename      = "lambda_function.zip"  # Ensure this file exists
-  function_name = "migration-processor"
+resource "aws_lambda_function" "migration_lambda" {
+  filename      = "lambda_function.zip"  # Ensure this file exists with your Lambda code
+  function_name = "migration-lambda"
   role          = aws_iam_role.lambda_role.arn
-  handler       = "lambda_function.lambda_handler"
+  handler       = "lambda_function.handler"
   runtime       = "python3.12"
   timeout       = 900  # 15 minutes
   memory_size   = 512
@@ -28,7 +27,7 @@ resource "aws_lambda_function" "migration_processor" {
 
 resource "aws_lambda_event_source_mapping" "sqs_trigger" {
   event_source_arn = aws_sqs_queue.migration_queue.arn
-  function_name    = aws_lambda_function.migration_processor.arn
+  function_name    = aws_lambda_function.migration_lambda.arn
 }
 
 resource "aws_dynamodb_table" "migration_table" {
@@ -67,48 +66,49 @@ resource "aws_iam_role" "lambda_role" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+resource "aws_iam_role_policy_attachment" "lambda_sqs_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaSQSQueueExecutionRole"
   role       = aws_iam_role.lambda_role.name
 }
 
-resource "aws_iam_role_policy" "lambda_sqs_dynamodb_policy" {
-  name = "lambda-sqs-dynamodb-policy"
+resource "aws_iam_role_policy" "dynamodb_policy" {
+  name = "dynamodb-policy"
   role = aws_iam_role.lambda_role.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
-        Action = [
-          "sqs:ReceiveMessage",
-          "sqs:DeleteMessage",
-          "sqs:GetQueueAttributes"
-        ]
-        Resource = aws_sqs_queue.migration_queue.arn
-      },
-      {
-        Effect = "Allow"
         Action = [
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:DeleteItem"
         ]
+        Effect   = "Allow"
         Resource = aws_dynamodb_table.migration_table.arn
       }
     ]
   })
 }
+
+resource "aws_cloudwatch_log_group" "lambda_log_group" {
+  name              = "/aws/lambda/${aws_lambda_function.migration_lambda.function_name}"
+  retention_in_days = 14
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_logs_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+  role       = aws_iam_role.lambda_role.name
+}
 ```
 
-This Terraform code creates the following resources:
+This Terraform code creates all the required resources:
 
 1. An SQS queue
-2. A Lambda function
-3. A DynamoDB table
-4. An IAM role for the Lambda function
-5. Necessary IAM policies for Lambda to access SQS and DynamoDB
-6. An event source mapping to trigger the Lambda function from SQS
+2. A Lambda function with the specified runtime, timeout, and memory
+3. A DynamoDB table with the specified configuration
+4. An IAM role for the Lambda function with permissions to read from SQS and write to DynamoDB
+5. CloudWatch logging for the Lambda function
+6. The necessary event source mapping to trigger the Lambda function from the SQS queue
 
-Note: You'll need to provide the `lambda_function.zip` file containing your Python code for the Lambda function. Make sure this file is in the same directory as your Terraform configuration or update the `filename` attribute in the `aws_lambda_function` resource accordingly.
+Make sure to replace the `lambda_function.zip` with your actual Lambda function code, and adjust the region if needed. Also, ensure that you have the AWS provider configured with the appropriate credentials before running this Terraform code.
