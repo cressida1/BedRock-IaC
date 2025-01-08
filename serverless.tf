@@ -1,26 +1,33 @@
-Here's the Terraform code based on the architecture diagram and requirements you've provided:
+Based on the provided architecture diagram and configuration details, here's the Terraform code to create the infrastructure:
 
 ```hcl
-# Configure the AWS provider
 provider "aws" {
   region = "us-west-2"  # Replace with your desired region
 }
 
-# Configure S3 backend for storing Terraform state
-terraform {
-  backend "s3" {
-    bucket = "bedrock-poc-test1"
-    key    = "terraform.tfstate"
-    region = "us-west-2"  # Replace with your S3 bucket's region
+resource "aws_sqs_queue" "migration_queue" {
+  name                        = "migration-queue.fifo"
+  fifo_queue                  = true
+  content_based_deduplication = true
+}
+
+resource "aws_lambda_function" "migration_processor" {
+  filename         = "lambda_function.zip"  # Ensure this file exists
+  function_name    = "migration-processor"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "lambda_function.lambda_handler"
+  runtime          = "python3.12"
+  timeout          = 900
+  memory_size      = 512
+
+  environment {
+    variables = {
+      SQS_QUEUE_URL = aws_sqs_queue.migration_queue.url
+      DYNAMODB_TABLE = aws_dynamodb_table.migration_table.name
+    }
   }
 }
 
-# Create SQS queue
-resource "aws_sqs_queue" "migration_queue" {
-  name = "migration-queue"
-}
-
-# Create DynamoDB table
 resource "aws_dynamodb_table" "migration_table" {
   name           = "Migration"
   billing_mode   = "PROVISIONED"
@@ -40,9 +47,8 @@ resource "aws_dynamodb_table" "migration_table" {
   }
 }
 
-# Create IAM role for Lambda
 resource "aws_iam_role" "lambda_role" {
-  name = "lambda_migration_role"
+  name = "migration_processor_lambda_role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -58,56 +64,60 @@ resource "aws_iam_role" "lambda_role" {
   })
 }
 
-# Attach policies to IAM role
-resource "aws_iam_role_policy_attachment" "lambda_sqs_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaSQSQueueExecutionRole"
+resource "aws_iam_role_policy_attachment" "lambda_policy" {
+  policy_arn = aws_iam_policy.lambda_policy.arn
   role       = aws_iam_role.lambda_role.name
 }
 
-resource "aws_iam_role_policy_attachment" "lambda_dynamodb_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess"
-  role       = aws_iam_role.lambda_role.name
+resource "aws_iam_policy" "lambda_policy" {
+  name = "migration_processor_lambda_policy"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "dynamodb:PutItem"
+        ]
+        Resource = [
+          aws_sqs_queue.migration_queue.arn,
+          aws_dynamodb_table.migration_table.arn
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:*:*:*"
+      }
+    ]
+  })
 }
 
-# Create Lambda function
-resource "aws_lambda_function" "migration_lambda" {
-  filename      = "lambda_function.zip"  # Replace with your Lambda function code
-  function_name = "migration-lambda"
-  role          = aws_iam_role.lambda_role.arn
-  handler       = "lambda_function.handler"
-  runtime       = "python3.12"
-  timeout       = 900  # 15 minutes
-  memory_size   = 512
-
-  environment {
-    variables = {
-      DYNAMODB_TABLE = aws_dynamodb_table.migration_table.name
-    }
-  }
-}
-
-# Create event source mapping
 resource "aws_lambda_event_source_mapping" "sqs_trigger" {
   event_source_arn = aws_sqs_queue.migration_queue.arn
-  function_name    = aws_lambda_function.migration_lambda.arn
+  function_name    = aws_lambda_function.migration_processor.function_name
 }
 
-# Create CloudWatch log group
 resource "aws_cloudwatch_log_group" "lambda_logs" {
-  name              = "/aws/lambda/${aws_lambda_function.migration_lambda.function_name}"
+  name              = "/aws/lambda/${aws_lambda_function.migration_processor.function_name}"
   retention_in_days = 14
 }
 ```
 
-This Terraform code creates the necessary resources based on the architecture diagram and requirements you provided. It includes:
+This Terraform code creates the following resources:
 
-1. AWS provider configuration
-2. S3 backend configuration for storing the Terraform state
-3. SQS queue
-4. DynamoDB table with the specified configuration
-5. IAM role for Lambda with necessary permissions
-6. Lambda function with the specified runtime, timeout, and memory
-7. Event source mapping to trigger Lambda from SQS
-8. CloudWatch log group for Lambda logs
+1. An SQS FIFO queue
+2. A Lambda function with the specified configuration
+3. A DynamoDB table with the given attributes
+4. IAM role and policy for the Lambda function
+5. Event source mapping to trigger the Lambda from SQS
+6. CloudWatch log group for Lambda logs
 
-Make sure to replace the `filename` in the `aws_lambda_function` resource with the actual path to your Lambda function code. Also, adjust the region in the provider and backend configuration if needed.
+Make sure to replace the region in the AWS provider block with your desired region. Also, ensure that you have a `lambda_function.zip` file containing your Lambda code in the same directory as this Terraform configuration.
